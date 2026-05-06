@@ -1,36 +1,98 @@
 import pandas as pd
-from sklearn.preprocessing import StandardScaler #used to create Z-scores on combine data
-from sklearn.metrics.pairwise import euclidean_distances # used to calculate the distance from a prospect to a current player using the z-scores 
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics.pairwise import euclidean_distances
 
+
+# ─────────────────────────────────────────────
+# DATA LOADING & CLEANING
+# ─────────────────────────────────────────────
+
+# Load NFL Combine data (2000–present) and drop any player missing a required measurement.
+# All eight physical metrics must be present for a valid comparison.
 NFL_Combine_Data = pd.read_csv('NFL_combine_Since_2000.csv')
+NFL_Combine_Data_Clean = NFL_Combine_Data.dropna(
+    subset=['Height', 'Weight', '40-yd Dash', 'Vertical Jump',
+            'Bench Press', 'Broad Jump', '3-Cone Drill', '20-yd Shuttle']
+)
 
-NFL_Combine_Data_Clean = NFL_Combine_Data.dropna(subset=['Height','Weight','40-yd Dash','Vertical Jump', 'Bench Press', 'Broad Jump', '3-Cone Drill', '20-yd Shuttle']) # deletes all of the players that have NAN in combine drills (can't compare them to prospects if they have no combine data)
 
-scaler = StandardScaler() # object used to scale data
-Combine_Scaled = scaler.fit_transform(NFL_Combine_Data_Clean[['Height','Weight','40-yd Dash','Vertical Jump', 'Bench Press', 'Broad Jump', '3-Cone Drill', '20-yd Shuttle']]) # puts z-scores on all of the NFL combine data, height and weight
+# ─────────────────────────────────────────────
+# FEATURE SCALING
+# ─────────────────────────────────────────────
+
+# Standardize all eight metrics into z-scores so that measurements with
+# different units (inches, lbs, seconds, reps) are directly comparable.
+scaler = StandardScaler()
+Combine_Scaled = scaler.fit_transform(
+    NFL_Combine_Data_Clean[['Height', 'Weight', '40-yd Dash', 'Vertical Jump',
+                             'Bench Press', 'Broad Jump', '3-Cone Drill', '20-yd Shuttle']]
+)
 
 
-def prospect_matcher(prospect, position):
-    # makes sure that the prospect matches are only of the same position 
-    filtered_NFL_Combine_Date = NFL_Combine_Data_Clean.loc[NFL_Combine_Data_Clean['Position'].isin(position)]         # only use players of the same postion filters the data 
-    filtered_NFL_Combine_Date_Scaled = scaler.transform(filtered_NFL_Combine_Date[['Height','Weight','40-yd Dash','Vertical Jump', 'Bench Press', 'Broad Jump', '3-Cone Drill', '20-yd Shuttle']]) # rescales the data based on only using the position 
-    
-    # makes the prospect data into a data frame
-    prospect_data = pd.DataFrame([prospect])         # makes a dictionary into a list
-    Prospect_Scaled = scaler.transform(prospect_data[['Height','Weight','40-yd Dash','Vertical Jump', 'Bench Press', 'Broad Jump', '3-Cone Drill', '20-yd Shuttle']])    # use trasnform here becasue using the same scale method previously created
+# ─────────────────────────────────────────────
+# PROSPECT MATCHING
+# ─────────────────────────────────────────────
 
-    # creates the distance and then makes a similarity score based on physicals used to compare prospects to a player
-    distances = euclidean_distances(Prospect_Scaled,filtered_NFL_Combine_Date_Scaled)     # caclulates the linear distance from the z-scores of the prospect to the data set of current nfl players
-    if 'similarity_score' in filtered_NFL_Combine_Date.columns:                    # checks if a column is already made so no error appears if made twice
-        filtered_NFL_Combine_Date.drop(columns=['similarity_score'], inplace=True)     # drops the column becasue the next line of code will create the column again
-    filtered_NFL_Combine_Date .insert(loc=1, column='similarity_score', value=distances[0])     # adds the euclidean distances to the current data frame of clean data as a new column
+def prospect_matcher(prospect: dict, position: list):
+    """
+    Find the 10 most athletically similar NFL Combine participants to a given prospect.
 
-    filtered_NFL_Combine_Date['Pick'] = filtered_NFL_Combine_Date['Pick'].fillna(999)   # undrafted players have a pick number of 999 which will make them the floor automatically
-    # creates the best 10 matches from the data set and then choses the floor (worst case) and ceiling (best case) of the prospects
-    matches = filtered_NFL_Combine_Date.sort_values('similarity_score').head(10)    # the top 10 similarty scores to the data set of prospects    
-    floor_index = matches['Pick'].idxmax()          # floor is the highest pick of the group     
-    floor_Row = matches.loc[floor_index]
-    ceiling_index = matches['Pick'].idxmin()       # ceiling is the lowest pick of the group
-    ceiling_Row = matches.loc[ceiling_index] 
+    Similarity is calculated using Euclidean distance between z-scored combine
+    measurements. Comparisons are restricted to players at the same position(s).
 
-    return matches, floor_Row, ceiling_Row
+    Args:
+        prospect (dict): A dictionary of the prospect's combine measurements.
+                         Required keys: 'Height', 'Weight', '40-yd Dash',
+                         'Vertical Jump', 'Bench Press', 'Broad Jump',
+                         '3-Cone Drill', '20-yd Shuttle'.
+        position (list): A list of positions to compare against (e.g., ["WR", "TE"]).
+                         Accepts multiple positions to allow cross-position comparisons.
+
+    Returns:
+        matches (DataFrame):   Top 10 most similar historical players, sorted by similarity score.
+        floor_row (Series):    The match with the lowest draft stock (highest pick number).
+        ceiling_row (Series):  The match with the highest draft stock (lowest pick number).
+    """
+
+    # Filter the dataset to only include players at the specified position(s).
+    # Accepts a list so that adjacent positions can be compared (e.g., WR and TE).
+    filtered_data = NFL_Combine_Data_Clean.loc[
+        NFL_Combine_Data_Clean['Position'].isin(position)
+    ].copy()
+
+    # Re-apply the scaler to the position-filtered subset for distance calculations
+    filtered_data_scaled = scaler.transform(
+        filtered_data[['Height', 'Weight', '40-yd Dash', 'Vertical Jump',
+                        'Bench Press', 'Broad Jump', '3-Cone Drill', '20-yd Shuttle']]
+    )
+
+    # Scale the prospect's measurements using the same scaler for a fair comparison.
+    # transform() is used (not fit_transform()) to preserve the original scaling reference.
+    prospect_df = pd.DataFrame([prospect])
+    prospect_scaled = scaler.transform(
+        prospect_df[['Height', 'Weight', '40-yd Dash', 'Vertical Jump',
+                     'Bench Press', 'Broad Jump', '3-Cone Drill', '20-yd Shuttle']]
+    )
+
+    # Compute Euclidean distance between the prospect and every player in the filtered set.
+    # A smaller distance indicates a closer physical match.
+    distances = euclidean_distances(prospect_scaled, filtered_data_scaled)
+
+    # Insert similarity scores as a new column, replacing any previous run's scores
+    if 'similarity_score' in filtered_data.columns:
+        filtered_data.drop(columns=['similarity_score'], inplace=True)
+    filtered_data.insert(loc=1, column='similarity_score', value=distances[0])
+
+    # Treat undrafted players as pick #999 so they sort correctly in floor/ceiling logic
+    filtered_data['Pick'] = filtered_data['Pick'].fillna(999)
+
+    # Sort by similarity score and take the top 10 matches
+    matches = filtered_data.sort_values('similarity_score').head(10)
+
+    # Floor: the worst draft outcome among the top 10 matches (highest pick number)
+    floor_row = matches.loc[matches['Pick'].idxmax()]
+
+    # Ceiling: the best draft outcome among the top 10 matches (lowest pick number)
+    ceiling_row = matches.loc[matches['Pick'].idxmin()]
+
+    return matches, floor_row, ceiling_row
